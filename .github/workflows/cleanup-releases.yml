@@ -1,0 +1,75 @@
+name: Limpar Releases Antigas
+
+on:
+  workflow_dispatch:
+
+# 🔴 C1 — Default-deny no nível do workflow.
+permissions: {}
+
+# 🟠 I4 — Serializa para evitar duas limpezas concorrentes deletando o mesmo conjunto.
+concurrency:
+  group: cleanup-releases
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: Manter apenas as 5 últimas releases
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # 🟠 I3 — Harden-runner: job usa GITHUB_TOKEN com contents:write.
+      - name: Harden runner
+        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
+        with:
+          egress-policy: audit
+          allowed-endpoints: >
+            api.github.com:443
+
+      - name: Apagar releases antigas
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const KEEP = 5;
+
+            const releases = await github.paginate(
+              github.rest.repos.listReleases,
+              { owner: context.repo.owner, repo: context.repo.repo, per_page: 100 }
+            );
+
+            // Sort by published_at descending (newest first).
+            // Drafts (no published_at) sort to the bottom by treating null as epoch.
+            releases.sort((a, b) =>
+              new Date(b.published_at || 0) - new Date(a.published_at || 0)
+            );
+
+            const toDelete = releases.slice(KEEP);
+
+            console.log(`Total de releases: ${releases.length}`);
+            console.log(`Mantendo as ${KEEP} mais recentes, apagando ${toDelete.length}`);
+
+            for (const release of toDelete) {
+              console.log(`Apagando release: ${release.tag_name} (id: ${release.id})`);
+
+              // Delete the release
+              await github.rest.repos.deleteRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: release.id,
+              });
+
+              // Delete the associated tag
+              try {
+                await github.rest.git.deleteRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: `tags/${release.tag_name}`,
+                });
+                console.log(`  Tag ${release.tag_name} apagada`);
+              } catch (e) {
+                console.log(`  Tag ${release.tag_name} não encontrada ou já apagada`);
+              }
+            }
+
+            console.log('✅ Limpeza concluída!');
