@@ -1,0 +1,204 @@
+import app from "flarum/common/app";
+import trustedHtml from "../utils/trustedHtml";
+import Component, { ComponentAttrs } from "flarum/common/Component";
+import Avatar from "flarum/common/components/Avatar";
+import humanTime from "flarum/common/utils/humanTime";
+import extractText from "flarum/common/utils/extractText";
+import type Mithril from "mithril";
+import type User from "flarum/common/models/User";
+import getBadgeSvg, { getBadgeSize } from "../utils/getBadgeSvg";
+import secondaryName from "../utils/secondaryName";
+import {
+  resolveTierForUser,
+  getTierColor,
+  sanitiseDescription,
+} from "../utils/tiers";
+
+export interface VerifiedPopoverAttrs extends ComponentAttrs {
+  user: User;
+  size?: string;
+}
+
+/**
+ * Rich popover for the verified badge — opens on hover/focus via CSS.
+ *
+ * The popover content is tier-aware: header label, description and the
+ * "Learn more" link all come from the configured tier definition. The
+ * anchor is the badge element itself, so the absolutely-positioned
+ * popover panel can centre on it cleanly.
+ */
+export default class VerifiedPopover extends Component<VerifiedPopoverAttrs> {
+  /**
+   * O cartão só é montado no primeiro hover/foco, via `m.render` num nó
+   * próprio: antes disso cada badge carregava avatar, data e SVGs escondidos
+   * em todo redraw. Não depende do redraw do pai porque `CommentPost` retém
+   * a subárvore do post e ignoraria a mudança de estado.
+   */
+  private activated = false;
+  private host: Element | null = null;
+  private content: () => Mithril.Children = () => null;
+
+  private activate = (e: Event & { redraw?: boolean }) => {
+    e.redraw = false;
+    if (this.activated || !this.host) return;
+    this.activated = true;
+    m.render(this.host, this.content());
+  };
+
+  onupdate(vnode: Mithril.VnodeDOM<VerifiedPopoverAttrs, this>) {
+    super.onupdate(vnode);
+    if (this.activated && this.host) m.render(this.host, this.content());
+  }
+
+  onremove(vnode: Mithril.VnodeDOM<VerifiedPopoverAttrs, this>) {
+    super.onremove(vnode);
+    if (this.host) m.render(this.host, null);
+  }
+
+  view(): Mithril.Children {
+    const { user } = this.attrs;
+    if (!user || !user.isVerified || !user.isVerified()) return null;
+
+    const tier = resolveTierForUser(user);
+    const color = getTierColor(tier);
+    const size = this.attrs.size || getBadgeSize();
+
+    const badgeStyle: Record<string, string> = { "--verified-size": size };
+    if (color) badgeStyle.color = color;
+
+    const verifiedAt = user.verifiedAt && user.verifiedAt();
+    const ariaLabel =
+      tier && tier.label
+        ? tier.label
+        : extractText(app.translator.trans("ramon-verified.lib.tooltip"));
+
+    // The header sentence is the tier description (e.g. "Conta de
+    // <strong>organização verificada</strong>."), allowed to carry sanitised
+    // <strong>/<em> markup so admins keep the colored-bold visual treatment
+    // the previous design had. When no description is configured for a tier,
+    // we fall back to the universal "identidade verificada" translation so
+    // the popover never renders empty.
+    //
+    // Defense-in-depth (§9.2): `tier.description` ALREADY went through
+    // `sanitiseDescription` in `tiers.ts:normalise` AND server-side
+    // `TierConfig::sanitiseDescription`. We re-run the JS sanitiser at the
+    // render site so any future code path that builds a tier object outside
+    // `normalise` (admin previews, test fixtures, hot-reloaded settings)
+    // can't sneak raw HTML into `m.trust`.
+    const tierDescription = tier && tier.description ? tier.description : null;
+    const headline: Mithril.Children = tierDescription
+      ? trustedHtml(sanitiseDescription(tierDescription))
+      : app.translator.trans("ramon-verified.lib.popover.headline");
+
+    const learnMoreUrl = tier && tier.learnMoreUrl ? tier.learnMoreUrl : "";
+
+    const tierClass = tier ? `VerifiedBadge--tier-${tier.id}` : "";
+
+    // Pass the resolved tier color down through a CSS variable so every
+    // accent inside the popover (header icon, <strong> in the headline,
+    // and the badge in the anchor) tints together. CSS falls back to the
+    // theme primary when --tier-color isn't set (no tier configured / no
+    // color on the tier).
+    const popoverStyle: Record<string, string> = {};
+    if (color) popoverStyle["--tier-color"] = color;
+
+    this.content = () =>
+      this.popover(user, tier, color, verifiedAt, headline, learnMoreUrl);
+
+    return (
+      <span
+        className="VerifiedPopover-anchor"
+        data-tier={tier ? tier.id : undefined}
+        style={popoverStyle}
+        onmouseenter={this.activate}
+        onfocusin={this.activate}
+      >
+        <span
+          className={"VerifiedBadge VerifiedBadge--inAnchor " + tierClass}
+          style={badgeStyle}
+          role="img"
+          aria-label={ariaLabel}
+          tabIndex={0}
+        >
+          {trustedHtml(getBadgeSvg(tier))}
+        </span>
+
+        <span
+          className="VerifiedPopover-host"
+          oncreate={(v: Mithril.VnodeDOM) => (this.host = v.dom)}
+        />
+      </span>
+    );
+  }
+
+  private popover(
+    user: User,
+    tier: ReturnType<typeof resolveTierForUser>,
+    color: string | null,
+    verifiedAt: Date | null | undefined,
+    headline: Mithril.Children,
+    learnMoreUrl: string,
+  ): Mithril.Children {
+    return (
+      <span className="VerifiedPopover" role="tooltip">
+        <span className="VerifiedPopover-arrow" aria-hidden="true" />
+
+        <span className="VerifiedPopover-header">
+          <span className="VerifiedPopover-headerIcon">
+            {trustedHtml(getBadgeSvg(tier))}
+          </span>
+          <span className="VerifiedPopover-headerText">
+            {headline}
+            {learnMoreUrl && (
+              <>
+                {" "}
+                <a
+                  className="VerifiedPopover-learnMore"
+                  href={learnMoreUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  // Inline color as a final tiebreaker against Flarum
+                  // core's generic `a` rules which can win on specificity
+                  // in some chrome contexts (post bodies, etc).
+                  style={color ? { color } : undefined}
+                >
+                  {app.translator.trans(
+                    "ramon-verified.lib.popover.learn_more",
+                  )}
+                </a>
+              </>
+            )}
+          </span>
+        </span>
+
+        <span className="VerifiedPopover-body">
+          <span className="VerifiedPopover-user">
+            <span className="VerifiedPopover-avatar">
+              <Avatar user={user} />
+            </span>
+            <span className="VerifiedPopover-userText">
+              <span className="VerifiedPopover-displayName">
+                {user.displayName()}
+              </span>
+              {secondaryName(user) && (
+                <span className="VerifiedPopover-username">
+                  {secondaryName(user)}
+                </span>
+              )}
+            </span>
+          </span>
+
+          <span className="VerifiedPopover-meta">
+            {verifiedAt
+              ? app.translator.trans("ramon-verified.lib.popover.verified_on", {
+                  date: extractText(humanTime(verifiedAt)),
+                })
+              : app.translator.trans(
+                  "ramon-verified.lib.popover.verified_no_date",
+                )}
+          </span>
+        </span>
+      </span>
+    );
+  }
+}

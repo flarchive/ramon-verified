@@ -1,0 +1,22 @@
+{
+  "name": "@ramon/verified",
+  "description": "Twitter-style user verification badge for Flarum.",
+  "license": "MIT",
+  "version": "1.0.0",
+  "private": true,
+  "devDependencies": {
+    "flarum-tsconfig": "^2.0.0",
+    "flarum-webpack-config": "^3.0.0",
+    "prettier": "^3.9.9",
+    "typescript": "^6.0.3",
+    "webpack": "^5.111.1",
+    "webpack-cli": "^7.2.3"
+  },
+  "scripts": {
+    "dev": "webpack --mode development --watch",
+    "build": "webpack --mode production",
+    "check-typings": "tsc --noEmit --emitDeclarationOnly false",
+    "format": "prettier --write src",
+    "format-check": "prettier --check src"
+  }
+}
